@@ -1,0 +1,8 @@
+langgraph
+langchain-ollama
+langchain-core
+langchain-community
+pydantic
+python-dotenv
+langchain-tavily
+rich
