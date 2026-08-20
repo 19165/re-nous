@@ -16,27 +16,23 @@ from agents.planning_agent import run_planner
 from agents.research_agent import run_researcher
 from agents.supervisor_agent import run_supervisor
 from agents.writer_agent import run_writer
-from tools.search_tool import extract_domain
 from utils.logger import logger
 
-# --- Findings Merger Reducer (Merge, Deduplicate & Global Domain Capping) ---
+# --- Findings Merger Reducer (Per-Subquestion Aggregation & URL Deduplication) ---
 
 def merge_findings_reducer(
     existing: List[Dict[str, Any]], new_items: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """
-    Reducer that appends and merges researcher findings, deduplicating by URL
-    and enforcing global domain diversity caps (max_sources_per_domain_global).
+    Reducer that appends and merges researcher findings per sub-question.
+    Deduplicates URLs strictly within each individual sub-question context,
+    allowing different sub-questions to independently reference the same authoritative sources.
     """
     if not existing and not new_items:
         return []
         
     combined = list(existing or []) + list(new_items or [])
     findings_map: Dict[str, Dict[str, Any]] = {}
-    global_domain_counts: Dict[str, int] = {}
-    seen_urls: set = set()
-    
-    max_global = default_budget.max_sources_per_domain_global
     
     for item in combined:
         sq = item.get("sub_question", "")
@@ -51,25 +47,18 @@ def merge_findings_reducer(
                 "error_message": err
             }
         else:
-            # Update status if new item has a status
             if status:
                 findings_map[sq]["status"] = status
                 findings_map[sq]["error_message"] = err
-            
+        
+        # Deduplicate URLs strictly per sub-question
+        existing_urls = {s.get("url") for s in findings_map[sq]["sources"] if s.get("url")}
         for s in item.get("sources", []):
             url = s.get("url", "")
-            if not url or url in seen_urls:
+            if url and url in existing_urls:
                 continue
-                
-            domain = extract_domain(url)
-            if domain:
-                current_count = global_domain_counts.get(domain, 0)
-                if current_count >= max_global:
-                    logger.info(f"🛡️ [dim]Global Domain Cap:[/dim] Excluded '{url}' (Domain '{domain}' hit {max_global} limit)")
-                    continue
-                global_domain_counts[domain] = current_count + 1
-                
-            seen_urls.add(url)
+            if url:
+                existing_urls.add(url)
             findings_map[sq]["sources"].append(s)
             
     return list(findings_map.values())
