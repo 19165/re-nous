@@ -1,9 +1,9 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from schemas import SupervisorOutput, BudgetConfig
 from config import llm, default_budget
-from utils.helpers import parse_pydantic_response
+from utils.helpers import parse_pydantic_response, extract_token_usage
 from utils.logger import logger
 from agents.base_agent import BaseAgent
 
@@ -49,11 +49,12 @@ class SupervisorAgent(BaseAgent):
         findings: List[Dict[str, Any]],
         revision_count: int = 0,
         elapsed_time: float = 0.0,
-        estimated_tokens: int = 0,
+        current_tokens: int = 0,
         budget: Optional[BudgetConfig] = None
-    ) -> SupervisorOutput:
+    ) -> Tuple[SupervisorOutput, int]:
         """
         Performs hybrid evaluation: checks hard budget constraints before invoking LLM critic.
+        Returns Tuple of (SupervisorOutput, tokens_used).
         """
         active_budget = budget or default_budget
         
@@ -63,21 +64,21 @@ class SupervisorAgent(BaseAgent):
             return SupervisorOutput(
                 approved=True,
                 reasoning=f"Max revision limit ({active_budget.max_revisions}) reached. No further pass allowed."
-            )
+            ), 0
             
         if elapsed_time >= active_budget.wall_clock_timeout_seconds:
             logger.info(f"🛡️ [bold yellow]Supervisor Budget Gate:[/bold yellow] Wall-clock timeout exceeded ({elapsed_time:.1f}s >= {active_budget.wall_clock_timeout_seconds}s). Passing to Writer.")
             return SupervisorOutput(
                 approved=True,
                 reasoning=f"Wall-clock timeout of {active_budget.wall_clock_timeout_seconds}s exceeded. Passing to Writer."
-            )
+            ), 0
             
-        if estimated_tokens >= active_budget.max_total_tokens:
-            logger.info(f"🛡️ [bold yellow]Supervisor Budget Gate:[/bold yellow] Token ceiling exceeded ({estimated_tokens} >= {active_budget.max_total_tokens}). Passing to Writer.")
+        if current_tokens >= active_budget.max_total_tokens:
+            logger.info(f"🛡️ [bold yellow]Supervisor Budget Gate:[/bold yellow] Token ceiling exceeded ({current_tokens} >= {active_budget.max_total_tokens}). Passing to Writer.")
             return SupervisorOutput(
                 approved=True,
-                reasoning=f"Estimated token ceiling ({active_budget.max_total_tokens}) exceeded. Passing to Writer."
-            )
+                reasoning=f"Token ceiling ({active_budget.max_total_tokens}) exceeded. Passing to Writer."
+            ), 0
 
         # --- Layer 2: LLM Evaluation ---
         logger.info(f"🛡️ [bold yellow]Supervisor Agent:[/bold yellow] Evaluating research quality (Revision {revision_count})...")
@@ -103,14 +104,15 @@ class SupervisorAgent(BaseAgent):
         
         response = llm.invoke(formatted_prompt)
         parsed_output: SupervisorOutput = parse_pydantic_response(response.content, supervisor_parser)
+        tokens = extract_token_usage(response, formatted_prompt)
         
         status_style = "bold green" if parsed_output.approved else "bold magenta"
         status_text = "APPROVED" if parsed_output.approved else "REVISION REQUESTED"
-        logger.info(f"🛡️ Supervisor Decision: [{status_style}]{status_text}[/{status_style}]")
+        logger.info(f"🛡️ Supervisor Decision: [{status_style}]{status_text}[/{status_style}] (Tokens used: [yellow]{tokens}[/yellow])")
         logger.info(f"Supervisor Reasoning: [cyan]{parsed_output.reasoning}[/cyan]")
-        return parsed_output
+        return parsed_output, tokens
 
-    def run(self, *args: Any, **kwargs: Any) -> SupervisorOutput:
+    def run(self, *args: Any, **kwargs: Any) -> Tuple[SupervisorOutput, int]:
         """Sync run wrapper delegating to evaluate."""
         return self.evaluate(*args, **kwargs)
 
@@ -120,15 +122,15 @@ def run_supervisor(
     findings: List[Dict[str, Any]],
     revision_count: int = 0,
     elapsed_time: float = 0.0,
-    estimated_tokens: int = 0,
+    current_tokens: int = 0,
     budget: Optional[BudgetConfig] = None
-) -> SupervisorOutput:
+) -> Tuple[SupervisorOutput, int]:
     agent = SupervisorAgent()
     return agent.evaluate(
         question=question,
         findings=findings,
         revision_count=revision_count,
         elapsed_time=elapsed_time,
-        estimated_tokens=estimated_tokens,
+        current_tokens=current_tokens,
         budget=budget
     )

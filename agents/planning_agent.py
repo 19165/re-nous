@@ -1,8 +1,9 @@
+from typing import Tuple
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from schemas import PlannerOutput
 from config import llm
-from utils.helpers import parse_pydantic_response
+from utils.helpers import parse_pydantic_response, extract_token_usage
 from utils.logger import logger
 from agents.base_agent import BaseAgent
 
@@ -31,15 +32,17 @@ class PlanningAgent(BaseAgent):
     name: str = "Planning Agent"
     role: str = "Research Query Planner & Decomposer"
     
-    def run(self, question: str) -> PlannerOutput:
-        """Executes query decomposition."""
+    def run(self, question: str) -> Tuple[PlannerOutput, int]:
+        """Executes query decomposition and returns parsed output with token count."""
         logger.info(f"🧭 Planning research sub-tasks for: [cyan]'{question}'[/cyan]")
         formatted_prompt = planner_prompt.format(question=question)
         response = llm.invoke(formatted_prompt)
         parsed_output = parse_pydantic_response(response.content, planner_parser)
-        return parsed_output
+        tokens = extract_token_usage(response, formatted_prompt)
+        logger.info(f"🧭 Planning complete (Tokens used: [yellow]{tokens}[/yellow])")
+        return parsed_output, tokens
 
 # Functional wrapper for LangGraph nodes and backward compatibility
-def run_planner(question: str) -> PlannerOutput:
+def run_planner(question: str) -> Tuple[PlannerOutput, int]:
     agent = PlanningAgent()
     return agent.run(question)

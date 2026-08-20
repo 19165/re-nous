@@ -1,9 +1,9 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from schemas import WriterOutput
 from config import llm
-from utils.helpers import parse_pydantic_response
+from utils.helpers import parse_pydantic_response, extract_token_usage
 from utils.logger import logger
 from agents.base_agent import BaseAgent
 
@@ -39,8 +39,8 @@ class WriterAgent(BaseAgent):
     name: str = "Writer Agent"
     role: str = "Report Synthesizer & Editor"
     
-    def run(self, question: str, findings: List[Dict[str, Any]]) -> WriterOutput:
-        """Executes report synthesis from findings."""
+    def run(self, question: str, findings: List[Dict[str, Any]]) -> Tuple[WriterOutput, int]:
+        """Executes report synthesis from findings and returns (WriterOutput, tokens)."""
         logger.info("[bold yellow]📝 Synthesizing final report with Writer Agent...[/bold yellow]")
         
         # Format findings into a readable string for the prompt
@@ -58,9 +58,11 @@ class WriterAgent(BaseAgent):
         formatted_prompt = writer_prompt.format(question=question, findings=formatted_findings)
         response = llm.invoke(formatted_prompt)
         parsed_output = parse_pydantic_response(response.content, writer_parser)
-        return parsed_output
+        tokens = extract_token_usage(response, formatted_prompt)
+        logger.info(f"📝 Report synthesis complete (Tokens used: [yellow]{tokens}[/yellow])")
+        return parsed_output, tokens
 
 # Functional wrapper for LangGraph nodes and backward compatibility
-def run_writer(question: str, findings: List[Dict[str, Any]]) -> WriterOutput:
+def run_writer(question: str, findings: List[Dict[str, Any]]) -> Tuple[WriterOutput, int]:
     agent = WriterAgent()
     return agent.run(question, findings)
