@@ -11,7 +11,7 @@ from agents.base_agent import BaseAgent
 writer_parser = PydanticOutputParser(pydantic_object=WriterOutput)
 
 # Dedicated model binding for Writer (large capacity 3500 tokens to prevent JSON truncation)
-writer_llm = llm.bind(num_predict=MAX_TOKENS_WRITER)
+writer_llm = llm.bind(options={"num_predict": MAX_TOKENS_WRITER})
 
 # Set up the prompt template
 writer_prompt_template = """You are an expert technical writer. Your task is to synthesize the research findings gathered from multiple sub-questions into a cohesive, comprehensive, and well-structured report.

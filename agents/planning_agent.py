@@ -11,7 +11,7 @@ from agents.base_agent import BaseAgent
 planner_parser = PydanticOutputParser(pydantic_object=PlannerOutput)
 
 # Dedicated model binding with generation ceiling
-planner_llm = llm.bind(num_predict=MAX_TOKENS_PLANNER)
+planner_llm = llm.bind(options={"num_predict": MAX_TOKENS_PLANNER})
 
 # Set up the prompt template
 planner_prompt_template = """You are an expert research planner. Break down the user's research question into exactly 3 distinct, specific sub-questions that can be researched independently using a search engine.

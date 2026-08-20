@@ -11,7 +11,7 @@ from agents.base_agent import BaseAgent
 supervisor_parser = PydanticOutputParser(pydantic_object=SupervisorOutput)
 
 # Dedicated model binding for Supervisor evaluation
-supervisor_llm = llm.bind(num_predict=MAX_TOKENS_SUPERVISOR)
+supervisor_llm = llm.bind(options={"num_predict": MAX_TOKENS_SUPERVISOR})
 
 # User-defined Supervisor Prompt Template
 supervisor_prompt_template = """You are a rigorous Research Supervisor and Quality Assurance Evaluator.

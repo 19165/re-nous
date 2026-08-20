@@ -8,7 +8,7 @@ from utils.logger import logger
 from agents.base_agent import BaseAgent
 
 # Dedicated model binding for Query Optimizer (constrained to 60 tokens for maximum speed)
-query_opt_llm = llm.bind(num_predict=MAX_TOKENS_QUERY_OPT)
+query_opt_llm = llm.bind(options={"num_predict": MAX_TOKENS_QUERY_OPT})
 
 # Query Optimizer Prompt Template
 query_opt_prompt_template = """You are an Expert Search Query Optimizer. Your task is to convert a research sub-question into a concise, high-impact search engine query (3 to 8 keywords). 
