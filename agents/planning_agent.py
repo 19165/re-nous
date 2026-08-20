@@ -2,7 +2,9 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from schemas import PlannerOutput
 from config import llm
-from agents.utils import parse_pydantic_response
+from utils.helpers import parse_pydantic_response
+from utils.logger import logger
+from agents.base_agent import BaseAgent
 
 # Initialize the Pydantic parser for PlannerOutput
 planner_parser = PydanticOutputParser(pydantic_object=PlannerOutput)
@@ -23,22 +25,21 @@ planner_prompt = PromptTemplate(
     partial_variables={"format_instructions": planner_parser.get_format_instructions()}
 )
 
+class PlanningAgent(BaseAgent):
+    """Agent responsible for breaking down a complex query into actionable sub-questions."""
+    
+    name: str = "Planning Agent"
+    role: str = "Research Query Planner & Decomposer"
+    
+    def run(self, question: str) -> PlannerOutput:
+        """Executes query decomposition."""
+        logger.info(f"🧭 Planning research sub-tasks for: [cyan]'{question}'[/cyan]")
+        formatted_prompt = planner_prompt.format(question=question)
+        response = llm.invoke(formatted_prompt)
+        parsed_output = parse_pydantic_response(response.content, planner_parser)
+        return parsed_output
+
+# Functional wrapper for LangGraph nodes and backward compatibility
 def run_planner(question: str) -> PlannerOutput:
-    """
-    Executes the planner agent to split the main question into sub-questions.
-    
-    Args:
-        question (str): The primary research question.
-        
-    Returns:
-        PlannerOutput: Structured object containing original question and sub-questions.
-    """
-    # Format the prompt
-    formatted_prompt = planner_prompt.format(question=question)
-    
-    # Invoke LLM
-    response = llm.invoke(formatted_prompt)
-    
-    # Parse output using our robust helper
-    parsed_output = parse_pydantic_response(response.content, planner_parser)
-    return parsed_output
+    agent = PlanningAgent()
+    return agent.run(question)

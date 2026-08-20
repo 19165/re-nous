@@ -1,14 +1,17 @@
 import re
+from typing import TypeVar
+from pydantic import BaseModel
 from langchain_core.output_parsers import PydanticOutputParser
+
+T = TypeVar("T", bound=BaseModel)
 
 def clean_json_string(text: str) -> str:
     """
     Cleans raw LLM text by removing reasoning/thinking blocks and extracting
-    JSON content from markdown code blocks or brackets.
+    JSON content from markdown code blocks or raw brackets.
     """
     # 1. Remove reasoning/thinking tags (e.g., <think>...</think>) if present
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    
     text = text.strip()
     
     # 2. Extract JSON from markdown code blocks (e.g., ```json ... ``` or ``` ... ```)
@@ -23,7 +26,7 @@ def clean_json_string(text: str) -> str:
     
     return text
 
-def parse_pydantic_response(text: str, parser: PydanticOutputParser):
+def parse_pydantic_response(text: str, parser: PydanticOutputParser[T]) -> T:
     """
     Helper to clean raw LLM output and parse it using PydanticOutputParser.
     """

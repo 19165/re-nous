@@ -1,13 +1,13 @@
 import operator
-from typing import List, TypedDict, Annotated
+from typing import List, Dict, Any, TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
 
 from schemas import PlannerOutput, ResearcherOutput, WriterOutput
-from agents.planner import run_planner
-from agents.researcher import run_researcher
-from agents.writer import run_writer
-from config import logger
+from agents.planning_agent import run_planner
+from agents.research_agent import run_researcher
+from agents.writer_agent import run_writer
+from utils.logger import logger
 
 # --- State Definitions ---
 
@@ -20,26 +20,25 @@ class GraphState(TypedDict):
     question: str
     sub_questions: List[str]
     # operator.add accumulates researcher outputs from parallel branches
-    findings: Annotated[List[dict], operator.add]
-    report: dict  # Serialized WriterOutput dictionary
+    findings: Annotated[List[Dict[str, Any]], operator.add]
+    report: Dict[str, Any]  # Serialized WriterOutput dictionary
 
 # --- Async Nodes ---
 
-async def planner_node(state: GraphState) -> dict:
+async def planner_node(state: GraphState) -> Dict[str, Any]:
     """Invokes the Planner agent and outputs sub-questions."""
     logger.info("[bold yellow]🧭 Running Planner Node...[/bold yellow]")
     planner_result: PlannerOutput = run_planner(state["question"])
     logger.info(f"Planner created sub-questions: [cyan]{planner_result.sub_questions}[/cyan]")
     return {"sub_questions": planner_result.sub_questions}
 
-async def researcher_node(state: WorkerState) -> dict:
+async def researcher_node(state: WorkerState) -> Dict[str, Any]:
     """Invokes the Researcher agent asynchronously to search web."""
     sub_q = state["sub_question"]
-    # We call and await the async researcher
     research_result: ResearcherOutput = await run_researcher(sub_q)
     return {"findings": [research_result.model_dump()]}
 
-async def writer_node(state: GraphState) -> dict:
+async def writer_node(state: GraphState) -> Dict[str, Any]:
     """Invokes the Writer agent to compile the final report."""
     logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Report)...[/bold yellow]")
     writer_result: WriterOutput = run_writer(state["question"], state["findings"])
@@ -51,20 +50,24 @@ def route_to_researchers(state: GraphState) -> List[Send]:
     """Routes the output of the planner to parallel researcher instances."""
     return [Send("researcher", {"sub_question": q}) for q in state["sub_questions"]]
 
-# --- Graph Assembly ---
+# --- Graph Assembly & Compilation ---
 
-workflow = StateGraph(GraphState)
+def build_research_graph() -> Any:
+    """Builds and compiles the Multi-Agent Research StateGraph."""
+    workflow = StateGraph(GraphState)
 
-# Add Nodes (LangGraph fully supports async nodes)
-workflow.add_node("planner", planner_node)
-workflow.add_node("researcher", researcher_node)
-workflow.add_node("writer", writer_node)
+    # Add Nodes
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("researcher", researcher_node)
+    workflow.add_node("writer", writer_node)
 
-# Set up Edges
-workflow.add_edge(START, "planner")
-workflow.add_conditional_edges("planner", route_to_researchers, ["researcher"])
-workflow.add_edge("researcher", "writer")
-workflow.add_edge("writer", END)
+    # Set up Edges
+    workflow.add_edge(START, "planner")
+    workflow.add_conditional_edges("planner", route_to_researchers, ["researcher"])
+    workflow.add_edge("researcher", "writer")
+    workflow.add_edge("writer", END)
 
-# Compile the graph
-app = workflow.compile()
+    return workflow.compile()
+
+# Default compiled application instance
+app = build_research_graph()
