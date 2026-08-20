@@ -22,12 +22,13 @@ def test_planner(query: str):
     console.print(Panel(f"[bold green]Starting Planner Test[/bold green]\nQuestion: [cyan]'{query}'[/cyan]", title="🧭 Planner Test"))
     try:
         console.print("[yellow]Invoking PlanningAgent...[/yellow]")
-        result = run_planner(query)
+        result, tokens = run_planner(query)
         console.print("\n[bold green]✅ Success! Planner returned structured output:[/bold green]")
         console.print(f"Original Question: [cyan]{result.original_question}[/cyan]")
         console.print("Sub-questions:")
         for idx, sq in enumerate(result.sub_questions, 1):
             console.print(f"  {idx}. [cyan]{sq}[/cyan]")
+        console.print(f"Exact Tokens Used: [yellow]{tokens}[/yellow]")
         return result
     except Exception as e:
         console.print(f"\n[bold red]❌ Error running planner test:[/bold red] {e}")
@@ -70,12 +71,12 @@ def test_supervisor(query: str):
             }
         ]
         console.print("[yellow]Invoking SupervisorAgent (Evaluating Findings & Budget)...[/yellow]")
-        result = run_supervisor(
+        result, tokens = run_supervisor(
             question=query,
             findings=mock_findings,
             revision_count=0,
             elapsed_time=5.0,
-            estimated_tokens=1000,
+            current_tokens=1000,
             budget=BudgetConfig()
         )
         console.print("\n[bold green]✅ Success! Supervisor returned structured evaluation:[/bold green]")
@@ -89,6 +90,7 @@ def test_supervisor(query: str):
                 console.print(f"     Answered: {rev.is_answered} | Sources Sufficient: {rev.sources_sufficient}")
                 if rev.refined_query:
                     console.print(f"     Refined Query: [yellow]{rev.refined_query}[/yellow]")
+        console.print(f"Exact Tokens Used: [yellow]{tokens}[/yellow]")
         return result
     except Exception as e:
         console.print(f"\n[bold red]❌ Error running supervisor test:[/bold red] {e}")
@@ -111,7 +113,7 @@ def test_writer(query: str):
             }
         ]
         console.print("[yellow]Invoking WriterAgent (Synthesizing Report)...[/yellow]")
-        result = run_writer(query, sample_findings)
+        result, tokens = run_writer(query, sample_findings)
         console.print("\n[bold green]✅ Success! Writer returned structured report:[/bold green]")
         console.print(f"Title: [bold cyan]{result.title}[/bold cyan]")
         console.print(f"Summary: {result.summary}")
@@ -119,6 +121,7 @@ def test_writer(query: str):
         for s in result.sections:
             console.print(f"  • [bold]{s.section_title}[/bold]: {s.section_content[:120]}...")
         console.print(f"Citations: {result.citations}")
+        console.print(f"Exact Tokens Used: [yellow]{tokens}[/yellow]")
         return result
     except Exception as e:
         console.print(f"\n[bold red]❌ Error running writer test:[/bold red] {e}")

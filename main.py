@@ -35,7 +35,7 @@ async def run_system(query: str, timeout: float, max_sub_questions: int, max_tok
             logger.info(f"Supervisor Evaluation Summary: [cyan]{final_state.get('supervisor_feedback')}[/cyan]")
             
         logger.info(f"Total Revision Loops: [magenta]{final_state.get('revision_count', 0)}[/magenta]")
-        logger.info(f"Estimated Tokens Used: [yellow]{final_state.get('estimated_tokens', 0)}[/yellow]")
+        logger.info(f"Total Exact Tokens Used: [yellow]{final_state.get('total_tokens', 0)}[/yellow]")
         logger.info("[bold green]Final Report Output Structure:[/bold green]")
 
         # Display the structured writer report dictionary using Rich pprint
