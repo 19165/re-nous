@@ -79,7 +79,8 @@ def test_supervisor(query: str):
             budget=BudgetConfig()
         )
         console.print("\n[bold green]✅ Success! Supervisor returned structured evaluation:[/bold green]")
-        console.print(f"Approved: [bold {'green' if result.approved else 'magenta'}]{result.approved}[/bold]")
+        appr_style = "bold green" if result.approved else "bold magenta"
+        console.print(f"Approved: [{appr_style}]{result.approved}[/{appr_style}]")
         console.print(f"Reasoning: [cyan]{result.reasoning}[/cyan]")
         if result.sub_question_reviews:
             console.print(f"Sub-question Reviews ({len(result.sub_question_reviews)}):")

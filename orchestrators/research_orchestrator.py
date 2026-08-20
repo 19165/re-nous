@@ -69,8 +69,8 @@ class GraphState(TypedDict):
     sub_questions: List[str]
     findings: Annotated[List[Dict[str, Any]], merge_findings_reducer]
     revision_count: int
-    total_searches: int
-    estimated_tokens: int
+    total_searches: Annotated[int, operator.add]
+    estimated_tokens: Annotated[int, operator.add]
     start_time: float
     supervisor_feedback: Optional[str]
     supervisor_approved: bool
@@ -159,14 +159,17 @@ async def supervisor_node(state: GraphState) -> Dict[str, Any]:
         "supervisor_feedback": supervisor_res.reasoning,
         "sub_questions_to_retry": retry_list if not is_approved else [],
         "revision_count": next_revision_count,
-        "estimated_tokens": current_tokens + 400,
+        "estimated_tokens": 400,
     }
 
 async def writer_node(state: GraphState) -> Dict[str, Any]:
     """Invokes Writer agent to synthesize all merged findings into the final report."""
     logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Final Report)...[/bold yellow]")
     writer_result: WriterOutput = run_writer(state["question"], state["findings"])
-    return {"report": writer_result.model_dump()}
+    return {
+        "report": writer_result.model_dump(),
+        "estimated_tokens": 600,
+    }
 
 # --- Routing Logic ---
 

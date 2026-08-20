@@ -104,7 +104,9 @@ class SupervisorAgent(BaseAgent):
         response = llm.invoke(formatted_prompt)
         parsed_output: SupervisorOutput = parse_pydantic_response(response.content, supervisor_parser)
         
-        logger.info(f"🛡️ Supervisor Decision: [bold {'green' if parsed_output.approved else 'magenta'}]{'APPROVED' if parsed_output.approved else 'REVISION REQUESTED'}[/bold]")
+        status_style = "bold green" if parsed_output.approved else "bold magenta"
+        status_text = "APPROVED" if parsed_output.approved else "REVISION REQUESTED"
+        logger.info(f"🛡️ Supervisor Decision: [{status_style}]{status_text}[/{status_style}]")
         logger.info(f"Supervisor Reasoning: [cyan]{parsed_output.reasoning}[/cyan]")
         return parsed_output
 
