@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
+from schemas import BudgetConfig
 from utils.logger import logger
 
 # Load environment variables from .env
@@ -20,4 +21,13 @@ llm = ChatOllama(
     base_url=OLLAMA_BASE_URL,
     model=OLLAMA_MODEL,
     temperature=0,
+)
+
+# Default Budget Configuration
+default_budget = BudgetConfig(
+    max_sub_questions=int(os.getenv("MAX_SUB_QUESTIONS", "3")),
+    max_searches_per_sub_question=int(os.getenv("MAX_SEARCHES_PER_SUB_QUESTION", "2")),
+    max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", "8000")),
+    wall_clock_timeout_seconds=float(os.getenv("WALL_CLOCK_TIMEOUT_SECONDS", "60.0")),
+    max_revisions=int(os.getenv("MAX_REVISIONS", "1")),
 )
