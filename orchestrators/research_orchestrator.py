@@ -1,70 +1,220 @@
+import time
 import operator
-from typing import List, Dict, Any, TypedDict, Annotated
+from typing import List, Dict, Any, TypedDict, Annotated, Optional, Union
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
 
-from schemas import PlannerOutput, ResearcherOutput, WriterOutput
+from schemas import (
+    PlannerOutput,
+    ResearcherOutput,
+    WriterOutput,
+    SupervisorOutput,
+    BudgetConfig,
+)
+from config import default_budget
 from agents.planning_agent import run_planner
 from agents.research_agent import run_researcher
+from agents.supervisor_agent import run_supervisor
 from agents.writer_agent import run_writer
 from utils.logger import logger
+
+# --- Findings Merger Reducer (Merge & Deduplicate by URL) ---
+
+def merge_findings_reducer(
+    existing: List[Dict[str, Any]], new_items: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Reducer that appends and merges researcher findings, deduplicating sources by URL.
+    """
+    if not existing:
+        return list(new_items)
+    
+    findings_map: Dict[str, Dict[str, Any]] = {}
+    for f in existing:
+        sq = f.get("sub_question", "")
+        findings_map[sq] = {
+            "sub_question": sq,
+            "sources": list(f.get("sources", []))
+        }
+        
+    for item in new_items:
+        sq = item.get("sub_question", "")
+        new_sources = item.get("sources", [])
+        if sq in findings_map:
+            # Merge sources and deduplicate by URL
+            existing_urls = {s.get("url") for s in findings_map[sq]["sources"] if s.get("url")}
+            for s in new_sources:
+                if s.get("url") not in existing_urls:
+                    findings_map[sq]["sources"].append(s)
+                    if s.get("url"):
+                        existing_urls.add(s.get("url"))
+        else:
+            findings_map[sq] = {
+                "sub_question": sq,
+                "sources": list(new_sources)
+            }
+            
+    return list(findings_map.values())
 
 # --- State Definitions ---
 
 class WorkerState(TypedDict):
     """State passed to each parallel Researcher instance."""
     sub_question: str
+    is_retry: bool
 
 class GraphState(TypedDict):
-    """Main Orchestrator Graph State."""
+    """Main Orchestrator State for the Multi-Agent State Machine."""
     question: str
     sub_questions: List[str]
-    # operator.add accumulates researcher outputs from parallel branches
-    findings: Annotated[List[Dict[str, Any]], operator.add]
-    report: Dict[str, Any]  # Serialized WriterOutput dictionary
+    findings: Annotated[List[Dict[str, Any]], merge_findings_reducer]
+    revision_count: int
+    total_searches: int
+    estimated_tokens: int
+    start_time: float
+    supervisor_feedback: Optional[str]
+    supervisor_approved: bool
+    sub_questions_to_retry: List[Dict[str, str]]
+    budget: BudgetConfig
+    report: Dict[str, Any]
 
-# --- Async Nodes ---
+# --- Async Graph Nodes ---
 
 async def planner_node(state: GraphState) -> Dict[str, Any]:
-    """Invokes the Planner agent and outputs sub-questions."""
+    """Invokes Planner agent, applies sub-question limits, and initializes budget trackers."""
     logger.info("[bold yellow]🧭 Running Planner Node...[/bold yellow]")
+    active_budget = state.get("budget") or default_budget
+    
     planner_result: PlannerOutput = run_planner(state["question"])
-    logger.info(f"Planner created sub-questions: [cyan]{planner_result.sub_questions}[/cyan]")
-    return {"sub_questions": planner_result.sub_questions}
+    sub_qs = planner_result.sub_questions[: active_budget.max_sub_questions]
+    
+    logger.info(f"Planner created [cyan]{len(sub_qs)}[/cyan] sub-questions: [cyan]{sub_qs}[/cyan]")
+    return {
+        "sub_questions": sub_qs,
+        "start_time": time.time(),
+        "revision_count": 0,
+        "total_searches": 0,
+        "estimated_tokens": 500,
+        "supervisor_approved": False,
+        "sub_questions_to_retry": [],
+        "budget": active_budget,
+    }
 
 async def researcher_node(state: WorkerState) -> Dict[str, Any]:
-    """Invokes the Researcher agent asynchronously to search web."""
+    """Invokes Researcher agent asynchronously and tracks search count/tokens."""
     sub_q = state["sub_question"]
+    is_retry = state.get("is_retry", False)
+    
+    if is_retry:
+        logger.info(f"🔄 [bold magenta]Researcher Node (2nd Pass/Retry):[/bold magenta] '{sub_q}'")
+    else:
+        logger.info(f"🔍 [bold cyan]Researcher Node (1st Pass):[/bold cyan] '{sub_q}'")
+        
     research_result: ResearcherOutput = await run_researcher(sub_q)
-    return {"findings": [research_result.model_dump()]}
+    return {
+        "findings": [research_result.model_dump()],
+        "total_searches": 1,
+        "estimated_tokens": 300,
+    }
+
+async def supervisor_node(state: GraphState) -> Dict[str, Any]:
+    """Evaluates researcher findings, enforces budgets, and decides if revision is needed."""
+    logger.info("[bold yellow]🛡️ Running Supervisor Node (QA & Budget Enforcement)...[/bold yellow]")
+    
+    active_budget = state.get("budget") or default_budget
+    elapsed_time = time.time() - state.get("start_time", time.time())
+    current_revision = state.get("revision_count", 0)
+    current_tokens = state.get("estimated_tokens", 0)
+    
+    supervisor_res: SupervisorOutput = run_supervisor(
+        question=state["question"],
+        findings=state.get("findings", []),
+        revision_count=current_revision,
+        elapsed_time=elapsed_time,
+        estimated_tokens=current_tokens,
+        budget=active_budget
+    )
+    
+    # Collect queries that need retry
+    retry_list = []
+    if not supervisor_res.approved and current_revision < active_budget.max_revisions:
+        for review in supervisor_res.sub_question_reviews:
+            if not review.is_answered or not review.sources_sufficient:
+                retry_query = review.refined_query or review.sub_question
+                retry_list.append({"original": review.sub_question, "query": retry_query})
+        
+        # If no specific review flagged, retry any with 0 sources or first failing
+        if not retry_list and supervisor_res.sub_question_reviews:
+            first_rev = supervisor_res.sub_question_reviews[0]
+            retry_list.append({
+                "original": first_rev.sub_question,
+                "query": first_rev.refined_query or first_rev.sub_question
+            })
+
+    is_approved = supervisor_res.approved or (len(retry_list) == 0) or (current_revision >= active_budget.max_revisions)
+    next_revision_count = current_revision + (1 if not is_approved else 0)
+    
+    return {
+        "supervisor_approved": is_approved,
+        "supervisor_feedback": supervisor_res.reasoning,
+        "sub_questions_to_retry": retry_list if not is_approved else [],
+        "revision_count": next_revision_count,
+        "estimated_tokens": current_tokens + 400,
+    }
 
 async def writer_node(state: GraphState) -> Dict[str, Any]:
-    """Invokes the Writer agent to compile the final report."""
-    logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Report)...[/bold yellow]")
+    """Invokes Writer agent to synthesize all merged findings into the final report."""
+    logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Final Report)...[/bold yellow]")
     writer_result: WriterOutput = run_writer(state["question"], state["findings"])
     return {"report": writer_result.model_dump()}
 
-# --- Routing Logic (Map-Reduce Send Pattern) ---
+# --- Routing Logic ---
 
 def route_to_researchers(state: GraphState) -> List[Send]:
-    """Routes the output of the planner to parallel researcher instances."""
-    return [Send("researcher", {"sub_question": q}) for q in state["sub_questions"]]
+    """Initial fan-out from Planner to Researcher instances."""
+    return [
+        Send("researcher", {"sub_question": q, "is_retry": False})
+        for q in state["sub_questions"]
+    ]
+
+def route_from_supervisor(state: GraphState) -> Union[List[Send], str]:
+    """
+    Conditional routing from Supervisor:
+    - If approved or budget/revision limit reached -> route to 'writer'
+    - If revision required -> Send failing queries back to 'researcher' for exact-once retry
+    """
+    if state.get("supervisor_approved", False) or not state.get("sub_questions_to_retry"):
+        logger.info("✅ [bold green]Supervisor Approved:[/bold green] Routing to Writer.")
+        return "writer"
+        
+    retry_items = state["sub_questions_to_retry"]
+    logger.info(f"🔄 [bold magenta]Supervisor Requested Revision ({len(retry_items)} queries):[/bold magenta] Routing back to Researcher.")
+    return [
+        Send("researcher", {"sub_question": item["query"], "is_retry": True})
+        for item in retry_items
+    ]
 
 # --- Graph Assembly & Compilation ---
 
 def build_research_graph() -> Any:
-    """Builds and compiles the Multi-Agent Research StateGraph."""
+    """Builds and compiles the Multi-Agent Research StateGraph with Supervisor."""
     workflow = StateGraph(GraphState)
 
     # Add Nodes
     workflow.add_node("planner", planner_node)
     workflow.add_node("researcher", researcher_node)
+    workflow.add_node("supervisor", supervisor_node)
     workflow.add_node("writer", writer_node)
 
     # Set up Edges
     workflow.add_edge(START, "planner")
     workflow.add_conditional_edges("planner", route_to_researchers, ["researcher"])
-    workflow.add_edge("researcher", "writer")
+    workflow.add_edge("researcher", "supervisor")
+    workflow.add_conditional_edges(
+        "supervisor",
+        route_from_supervisor,
+        ["researcher", "writer"]
+    )
     workflow.add_edge("writer", END)
 
     return workflow.compile()
