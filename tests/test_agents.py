@@ -34,17 +34,18 @@ def test_planner(query: str):
         console.print(f"\n[bold red]❌ Error running planner test:[/bold red] {e}")
         return None
 
-def test_researcher(sub_question: str):
+def test_researcher(sub_question: str, main_topic: str = ""):
     """Unit test for ResearchAgent."""
-    console.print(Panel(f"[bold green]Starting Researcher Test[/bold green]\nSub-question: [cyan]'{sub_question}'[/cyan]", title="🔍 Researcher Test"))
+    console.print(Panel(f"[bold green]Starting Researcher Test[/bold green]\nMain Topic: [cyan]'{main_topic}'[/cyan]\nSub-question: [cyan]'{sub_question}'[/cyan]", title="🔍 Researcher Test"))
     try:
-        console.print("[yellow]Invoking ResearchAgent (Tavily search)...[/yellow]")
-        result = asyncio.run(run_researcher(sub_question))
+        console.print("[yellow]Invoking ResearchAgent (Query Optimization & Tavily search)...[/yellow]")
+        result, tokens = asyncio.run(run_researcher(sub_question, main_topic))
         console.print("\n[bold green]✅ Success! Researcher returned structured sources:[/bold green]")
         console.print(f"Sub-question: [cyan]{result.sub_question}[/cyan]")
         console.print(f"Found {len(result.sources)} sources:")
         for idx, s in enumerate(result.sources, 1):
             console.print(f"  {idx}. [bold]{s.title}[/bold]\n     [dim]{s.url}[/dim]")
+        console.print(f"Query Optimization Tokens Used: [yellow]{tokens}[/yellow]")
         return result
     except Exception as e:
         console.print(f"\n[bold red]❌ Error running researcher test:[/bold red] {e}")
@@ -137,7 +138,7 @@ def run_all_tests(query: str):
     # 2. Researcher
     sub_q = planner_res.sub_questions[0] if planner_res and planner_res.sub_questions else f"Key concepts of {query}"
     console.print("\n" + "─" * 60 + "\n")
-    test_researcher(sub_q)
+    test_researcher(sub_q, main_topic=query)
     
     # 3. Supervisor
     console.print("\n" + "─" * 60 + "\n")

@@ -60,6 +60,7 @@ def merge_findings_reducer(
 
 class WorkerState(TypedDict):
     """State passed to each parallel Researcher instance."""
+    main_topic: str
     sub_question: str
     is_retry: bool
 
@@ -101,8 +102,9 @@ async def planner_node(state: GraphState) -> Dict[str, Any]:
     }
 
 async def researcher_node(state: WorkerState) -> Dict[str, Any]:
-    """Invokes Researcher agent asynchronously and tracks search count."""
+    """Invokes Researcher agent with Query Optimization and tracks tokens/search count."""
     sub_q = state["sub_question"]
+    main_topic = state.get("main_topic", "")
     is_retry = state.get("is_retry", False)
     
     if is_retry:
@@ -110,11 +112,11 @@ async def researcher_node(state: WorkerState) -> Dict[str, Any]:
     else:
         logger.info(f"🔍 [bold cyan]Researcher Node (1st Pass):[/bold cyan] '{sub_q}'")
         
-    research_result: ResearcherOutput = await run_researcher(sub_q)
+    research_result, tokens = await run_researcher(sub_question=sub_q, main_topic=main_topic)
     return {
         "findings": [research_result.model_dump()],
         "total_searches": 1,
-        "total_tokens": 0,  # Web search does not consume LLM generation tokens
+        "total_tokens": tokens,
     }
 
 async def supervisor_node(state: GraphState) -> Dict[str, Any]:
@@ -174,9 +176,13 @@ async def writer_node(state: GraphState) -> Dict[str, Any]:
 # --- Routing Logic ---
 
 def route_to_researchers(state: GraphState) -> List[Send]:
-    """Initial fan-out from Planner to Researcher instances."""
+    """Initial fan-out from Planner to Researcher instances with main_topic context."""
     return [
-        Send("researcher", {"sub_question": q, "is_retry": False})
+        Send("researcher", {
+            "main_topic": state["question"],
+            "sub_question": q,
+            "is_retry": False
+        })
         for q in state["sub_questions"]
     ]
 
@@ -184,7 +190,7 @@ def route_from_supervisor(state: GraphState) -> Union[List[Send], str]:
     """
     Conditional routing from Supervisor:
     - If approved or budget/revision limit reached -> route to 'writer'
-    - If revision required -> Send failing queries back to 'researcher' for exact-once retry
+    - If revision required -> Send failing queries back to 'researcher' with main_topic for exact-once retry
     """
     if state.get("supervisor_approved", False) or not state.get("sub_questions_to_retry"):
         logger.info("✅ [bold green]Supervisor Approved:[/bold green] Routing to Writer.")
@@ -193,7 +199,11 @@ def route_from_supervisor(state: GraphState) -> Union[List[Send], str]:
     retry_items = state["sub_questions_to_retry"]
     logger.info(f"🔄 [bold magenta]Supervisor Requested Revision ({len(retry_items)} queries):[/bold magenta] Routing back to Researcher.")
     return [
-        Send("researcher", {"sub_question": item["query"], "is_retry": True})
+        Send("researcher", {
+            "main_topic": state["question"],
+            "sub_question": item["query"],
+            "is_retry": True
+        })
         for item in retry_items
     ]
 
