@@ -91,7 +91,13 @@ class SupervisorAgent(BaseAgent):
         for idx, f in enumerate(findings, 1):
             sub_q = f.get("sub_question", "Unknown")
             sources = f.get("sources", [])
+            status = f.get("status", "SUCCESS")
+            err = f.get("error_message")
+            
             findings_context += f"\n--- Sub-question {idx}: {sub_q} ---\n"
+            findings_context += f"Search Status: {status}\n"
+            if err:
+                findings_context += f"Search Error Detail: {err}\n"
             findings_context += f"Total Sources Found: {len(sources)}\n"
             for s_idx, s in enumerate(sources, 1):
                 title = s.get("title", "Untitled")

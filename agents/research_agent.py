@@ -1,6 +1,6 @@
 from typing import Any, Tuple, Optional
 from langchain_core.prompts import PromptTemplate
-from schemas import ResearcherOutput
+from schemas import ResearcherOutput, SearchStatus
 from config import llm, MAX_TOKENS_QUERY_OPT
 from tools.search_tool import search_tool, TavilySearchTool
 from utils.helpers import extract_token_usage
@@ -30,7 +30,7 @@ query_opt_prompt = PromptTemplate(
 )
 
 class ResearchAgent(BaseAgent):
-    """Agent responsible for optimizing search queries and conducting web research."""
+    """Agent responsible for optimizing search queries and conducting web research with structured failure handling."""
     
     name: str = "Research Agent"
     role: str = "Query Optimizer & Web Researcher"
@@ -47,29 +47,32 @@ class ResearchAgent(BaseAgent):
         )
         response = query_opt_llm.invoke(formatted_prompt)
         raw_query = str(getattr(response, "content", response)).strip()
-        # Clean quotes and backticks defensively
         clean_query = raw_query.strip("\"'`").strip()
         tokens = extract_token_usage(response, formatted_prompt)
         return clean_query if clean_query else sub_question, tokens
         
     def run(self, sub_question: str, main_topic: str = "") -> Tuple[ResearcherOutput, int]:
-        """Synchronous execution with query optimization."""
+        """Synchronous execution with query optimization and resilient status return."""
         search_query, tokens = self.optimize_query(main_topic, sub_question)
         logger.info(f"🎯 [bold cyan]Optimized Query:[/bold cyan] '{search_query}' (Tokens used: [yellow]{tokens}[/yellow])")
-        sources = self.tool.invoke(search_query)
+        sources, status, err = self.tool.invoke(search_query)
         return ResearcherOutput(
             sub_question=sub_question,
-            sources=sources
+            sources=sources,
+            status=status,
+            error_message=err
         ), tokens
         
     async def arun(self, sub_question: str, main_topic: str = "") -> Tuple[ResearcherOutput, int]:
-        """Asynchronous execution with query optimization."""
+        """Asynchronous execution with query optimization and resilient status return."""
         search_query, tokens = self.optimize_query(main_topic, sub_question)
         logger.info(f"🎯 [bold cyan]Optimized Query:[/bold cyan] '{search_query}' (Tokens used: [yellow]{tokens}[/yellow])")
-        sources = await self.tool.ainvoke(search_query)
+        sources, status, err = await self.tool.ainvoke(search_query)
         return ResearcherOutput(
             sub_question=sub_question,
-            sources=sources
+            sources=sources,
+            status=status,
+            error_message=err
         ), tokens
 
 # Functional wrapper for LangGraph nodes and backward compatibility

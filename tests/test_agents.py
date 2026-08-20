@@ -45,6 +45,9 @@ def test_researcher(sub_question: str, main_topic: str = ""):
         console.print(f"Found {len(result.sources)} sources:")
         for idx, s in enumerate(result.sources, 1):
             console.print(f"  {idx}. [bold]{s.title}[/bold]\n     [dim]{s.url}[/dim]")
+        console.print(f"Search Execution Status: [bold green]{result.status.value}[/bold green]")
+        if result.error_message:
+            console.print(f"Error Diagnostic: [bold red]{result.error_message}[/bold red]")
         console.print(f"Query Optimization Tokens Used: [yellow]{tokens}[/yellow]")
         return result
     except Exception as e:
