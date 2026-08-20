@@ -70,7 +70,7 @@ class GraphState(TypedDict):
     findings: Annotated[List[Dict[str, Any]], merge_findings_reducer]
     revision_count: int
     total_searches: Annotated[int, operator.add]
-    estimated_tokens: Annotated[int, operator.add]
+    total_tokens: Annotated[int, operator.add]
     start_time: float
     supervisor_feedback: Optional[str]
     supervisor_approved: bool
@@ -85,7 +85,7 @@ async def planner_node(state: GraphState) -> Dict[str, Any]:
     logger.info("[bold yellow]🧭 Running Planner Node...[/bold yellow]")
     active_budget = state.get("budget") or default_budget
     
-    planner_result: PlannerOutput = run_planner(state["question"])
+    planner_result, tokens = run_planner(state["question"])
     sub_qs = planner_result.sub_questions[: active_budget.max_sub_questions]
     
     logger.info(f"Planner created [cyan]{len(sub_qs)}[/cyan] sub-questions: [cyan]{sub_qs}[/cyan]")
@@ -94,14 +94,14 @@ async def planner_node(state: GraphState) -> Dict[str, Any]:
         "start_time": time.time(),
         "revision_count": 0,
         "total_searches": 0,
-        "estimated_tokens": 500,
+        "total_tokens": tokens,
         "supervisor_approved": False,
         "sub_questions_to_retry": [],
         "budget": active_budget,
     }
 
 async def researcher_node(state: WorkerState) -> Dict[str, Any]:
-    """Invokes Researcher agent asynchronously and tracks search count/tokens."""
+    """Invokes Researcher agent asynchronously and tracks search count."""
     sub_q = state["sub_question"]
     is_retry = state.get("is_retry", False)
     
@@ -114,7 +114,7 @@ async def researcher_node(state: WorkerState) -> Dict[str, Any]:
     return {
         "findings": [research_result.model_dump()],
         "total_searches": 1,
-        "estimated_tokens": 300,
+        "total_tokens": 0,  # Web search does not consume LLM generation tokens
     }
 
 async def supervisor_node(state: GraphState) -> Dict[str, Any]:
@@ -124,14 +124,14 @@ async def supervisor_node(state: GraphState) -> Dict[str, Any]:
     active_budget = state.get("budget") or default_budget
     elapsed_time = time.time() - state.get("start_time", time.time())
     current_revision = state.get("revision_count", 0)
-    current_tokens = state.get("estimated_tokens", 0)
+    current_tokens = state.get("total_tokens", 0)
     
-    supervisor_res: SupervisorOutput = run_supervisor(
+    supervisor_res, tokens = run_supervisor(
         question=state["question"],
         findings=state.get("findings", []),
         revision_count=current_revision,
         elapsed_time=elapsed_time,
-        estimated_tokens=current_tokens,
+        current_tokens=current_tokens,
         budget=active_budget
     )
     
@@ -159,16 +159,16 @@ async def supervisor_node(state: GraphState) -> Dict[str, Any]:
         "supervisor_feedback": supervisor_res.reasoning,
         "sub_questions_to_retry": retry_list if not is_approved else [],
         "revision_count": next_revision_count,
-        "estimated_tokens": 400,
+        "total_tokens": tokens,
     }
 
 async def writer_node(state: GraphState) -> Dict[str, Any]:
     """Invokes Writer agent to synthesize all merged findings into the final report."""
     logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Final Report)...[/bold yellow]")
-    writer_result: WriterOutput = run_writer(state["question"], state["findings"])
+    writer_result, tokens = run_writer(state["question"], state["findings"])
     return {
         "report": writer_result.model_dump(),
-        "estimated_tokens": 600,
+        "total_tokens": tokens,
     }
 
 # --- Routing Logic ---
