@@ -3,6 +3,7 @@ import operator
 from typing import List, Dict, Any, TypedDict, Annotated, Optional, Union
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
+from langgraph.checkpoint.memory import MemorySaver
 
 from schemas import (
     PlannerOutput,
@@ -17,6 +18,7 @@ from agents.research_agent import run_researcher
 from agents.supervisor_agent import run_supervisor
 from agents.writer_agent import run_writer
 from utils.logger import logger
+from utils.redis_cache import get_cached_node_result, set_cached_node_result
 
 # --- Findings Merger Reducer (Per-Subquestion Aggregation & URL Deduplication) ---
 
@@ -74,6 +76,7 @@ class WorkerState(TypedDict):
 class GraphState(TypedDict):
     """Main Orchestrator State for the Multi-Agent State Machine."""
     question: str
+    run_id: Optional[str]
     sub_questions: List[str]
     findings: Annotated[List[Dict[str, Any]], merge_findings_reducer]
     revision_count: int
@@ -89,13 +92,33 @@ class GraphState(TypedDict):
 # --- Async Graph Nodes ---
 
 async def planner_node(state: GraphState) -> Dict[str, Any]:
-    """Invokes Planner agent, applies sub-question limits, and initializes budget trackers."""
+    """Invokes Planner agent, applies sub-question limits, and initializes budget trackers with Redis caching."""
     logger.info("[bold yellow]🧭 Running Planner Node...[/bold yellow]")
     active_budget = state.get("budget") or default_budget
-    
-    planner_result, tokens = run_planner(state["question"])
+    question = state["question"]
+
+    # Check Redis Cache
+    cached = get_cached_node_result("planner", question)
+    if cached and "sub_questions" in cached:
+        sub_qs = cached["sub_questions"][: active_budget.max_sub_questions]
+        logger.info(f"⚡ [bold green]Planner Cache Hit:[/bold green] Retrieved [cyan]{len(sub_qs)}[/cyan] sub-questions from cache")
+        return {
+            "sub_questions": sub_qs,
+            "start_time": time.time(),
+            "revision_count": 0,
+            "total_searches": 0,
+            "total_tokens": 0,
+            "supervisor_approved": False,
+            "sub_questions_to_retry": [],
+            "budget": active_budget,
+        }
+
+    planner_result, tokens = run_planner(question)
     sub_qs = planner_result.sub_questions[: active_budget.max_sub_questions]
     
+    # Save to Redis Cache
+    set_cached_node_result("planner", question, {"sub_questions": sub_qs})
+
     logger.info(f"Planner created [cyan]{len(sub_qs)}[/cyan] sub-questions: [cyan]{sub_qs}[/cyan]")
     return {
         "sub_questions": sub_qs,
@@ -109,35 +132,64 @@ async def planner_node(state: GraphState) -> Dict[str, Any]:
     }
 
 async def researcher_node(state: WorkerState) -> Dict[str, Any]:
-    """Invokes Researcher agent with Query Optimization and tracks tokens/search count."""
+    """Invokes Researcher agent with Query Optimization and tracks tokens/search count with Redis caching."""
     sub_q = state["sub_question"]
     main_topic = state.get("main_topic", "")
     is_retry = state.get("is_retry", False)
-    
+    cache_input = f"{main_topic}::{sub_q}"
+
     if is_retry:
         logger.info(f"🔄 [bold magenta]Researcher Node (2nd Pass/Retry):[/bold magenta] '{sub_q}'")
     else:
         logger.info(f"🔍 [bold cyan]Researcher Node (1st Pass):[/bold cyan] '{sub_q}'")
-        
+
+    # Check Redis Cache
+    cached = get_cached_node_result("researcher", cache_input)
+    if cached and "findings" in cached:
+        logger.info(f"⚡ [bold green]Researcher Cache Hit:[/bold green] '{sub_q}'")
+        return {
+            "findings": cached["findings"],
+            "total_searches": 0,
+            "total_tokens": 0,
+        }
+
     research_result, tokens = await run_researcher(sub_question=sub_q, main_topic=main_topic)
+    findings_data = [research_result.model_dump()]
+
+    # Save to Redis Cache
+    set_cached_node_result("researcher", cache_input, {"findings": findings_data})
+
     return {
-        "findings": [research_result.model_dump()],
+        "findings": findings_data,
         "total_searches": 1,
         "total_tokens": tokens,
     }
 
 async def supervisor_node(state: GraphState) -> Dict[str, Any]:
-    """Evaluates researcher findings, enforces budgets, and decides if revision is needed."""
+    """Evaluates researcher findings, enforces budgets, and decides if revision is needed with Redis caching."""
     logger.info("[bold yellow]🛡️ Running Supervisor Node (QA & Budget Enforcement)...[/bold yellow]")
     
     active_budget = state.get("budget") or default_budget
     elapsed_time = time.time() - state.get("start_time", time.time())
     current_revision = state.get("revision_count", 0)
     current_tokens = state.get("total_tokens", 0)
-    
+    findings = state.get("findings", [])
+
+    cache_input = f"{state['question']}::rev_{current_revision}::{[s.get('sub_question', '') for s in findings]}"
+    cached = get_cached_node_result("supervisor", cache_input)
+    if cached:
+        logger.info(f"⚡ [bold green]Supervisor Cache Hit[/bold green]")
+        return {
+            "supervisor_approved": cached["supervisor_approved"],
+            "supervisor_feedback": cached["supervisor_feedback"],
+            "sub_questions_to_retry": cached["sub_questions_to_retry"],
+            "revision_count": cached["revision_count"],
+            "total_tokens": 0,
+        }
+
     supervisor_res, tokens = run_supervisor(
         question=state["question"],
-        findings=state.get("findings", []),
+        findings=findings,
         revision_count=current_revision,
         elapsed_time=elapsed_time,
         current_tokens=current_tokens,
@@ -163,20 +215,39 @@ async def supervisor_node(state: GraphState) -> Dict[str, Any]:
     is_approved = supervisor_res.approved or (len(retry_list) == 0) or (current_revision >= active_budget.max_revisions)
     next_revision_count = current_revision + (1 if not is_approved else 0)
     
-    return {
+    result_to_cache = {
         "supervisor_approved": is_approved,
         "supervisor_feedback": supervisor_res.reasoning,
         "sub_questions_to_retry": retry_list if not is_approved else [],
         "revision_count": next_revision_count,
+    }
+    set_cached_node_result("supervisor", cache_input, result_to_cache)
+
+    return {
+        **result_to_cache,
         "total_tokens": tokens,
     }
 
 async def writer_node(state: GraphState) -> Dict[str, Any]:
-    """Invokes Writer agent to synthesize all merged findings into the final report."""
+    """Invokes Writer agent to synthesize all merged findings into the final report with Redis caching."""
     logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Final Report)...[/bold yellow]")
-    writer_result, tokens = run_writer(state["question"], state["findings"])
+    findings = state.get("findings", [])
+    cache_input = f"{state['question']}::{[(f.get('sub_question', ''), len(f.get('sources', []))) for f in findings]}"
+
+    cached = get_cached_node_result("writer", cache_input)
+    if cached and "report" in cached:
+        logger.info(f"⚡ [bold green]Writer Cache Hit:[/bold green] Returning cached final report")
+        return {
+            "report": cached["report"],
+            "total_tokens": 0,
+        }
+
+    writer_result, tokens = run_writer(state["question"], findings)
+    report_dict = writer_result.model_dump()
+    set_cached_node_result("writer", cache_input, {"report": report_dict})
+
     return {
-        "report": writer_result.model_dump(),
+        "report": report_dict,
         "total_tokens": tokens,
     }
 
@@ -216,8 +287,8 @@ def route_from_supervisor(state: GraphState) -> Union[List[Send], str]:
 
 # --- Graph Assembly & Compilation ---
 
-def build_research_graph() -> Any:
-    """Builds and compiles the Multi-Agent Research StateGraph with Supervisor."""
+def build_research_graph(checkpointer: Optional[Any] = None) -> Any:
+    """Builds and compiles the Multi-Agent Research StateGraph with Supervisor and Checkpointing."""
     workflow = StateGraph(GraphState)
 
     # Add Nodes
@@ -237,7 +308,8 @@ def build_research_graph() -> Any:
     )
     workflow.add_edge("writer", END)
 
-    return workflow.compile()
+    saver = checkpointer if checkpointer is not None else MemorySaver()
+    return workflow.compile(checkpointer=saver)
 
 # Default compiled application instance
 app = build_research_graph()
