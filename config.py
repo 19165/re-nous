@@ -29,6 +29,9 @@ MAX_TOKENS_QUERY_OPT = int(os.getenv("MAX_TOKENS_QUERY_OPT", "60"))
 MAX_TOKENS_SUPERVISOR = int(os.getenv("MAX_TOKENS_SUPERVISOR", "800"))
 MAX_TOKENS_WRITER = int(os.getenv("MAX_TOKENS_WRITER", "3500"))
 
+# Raw Content Extraction Limits (characters per source)
+MAX_RAW_CONTENT_CHARS = int(os.getenv("MAX_RAW_CONTENT_CHARS", "2500"))
+
 # Default Budget Configuration
 default_budget = BudgetConfig(
     max_sub_questions=int(os.getenv("MAX_SUB_QUESTIONS", "3")),

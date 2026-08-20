@@ -10,7 +10,8 @@ class PlannerOutput(BaseModel):
 class SearchSource(BaseModel):
     title: str = Field(description="Title of the source webpage")
     url: str = Field(description="URL of the source webpage")
-    content: str = Field(description="Relevant text snippet from the webpage")
+    content: str = Field(description="Primary content, raw markdown excerpt, or text snippet from the webpage")
+    raw_content: Optional[str] = Field(default=None, description="Full raw markdown content from the webpage if available")
 
 class ResearcherOutput(BaseModel):
     sub_question: str = Field(description="The sub-question that was researched")
