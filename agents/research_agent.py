@@ -1,11 +1,14 @@
 from typing import Any, Tuple, Optional
 from langchain_core.prompts import PromptTemplate
 from schemas import ResearcherOutput
-from config import llm
+from config import llm, MAX_TOKENS_QUERY_OPT
 from tools.search_tool import search_tool, TavilySearchTool
 from utils.helpers import extract_token_usage
 from utils.logger import logger
 from agents.base_agent import BaseAgent
+
+# Dedicated model binding for Query Optimizer (constrained to 60 tokens for maximum speed)
+query_opt_llm = llm.bind(num_predict=MAX_TOKENS_QUERY_OPT)
 
 # Query Optimizer Prompt Template
 query_opt_prompt_template = """You are an Expert Search Query Optimizer. Your task is to convert a research sub-question into a concise, high-impact search engine query (3 to 8 keywords). 
@@ -36,13 +39,13 @@ class ResearchAgent(BaseAgent):
         self.tool = tool
 
     def optimize_query(self, main_topic: str, sub_question: str) -> Tuple[str, int]:
-        """Converts conversational sub-question into high-density keywords via LLM."""
+        """Converts conversational sub-question into high-density keywords via fast LLM."""
         effective_topic = main_topic if main_topic else sub_question
         formatted_prompt = query_opt_prompt.format(
             main_topic=effective_topic,
             sub_question=sub_question
         )
-        response = llm.invoke(formatted_prompt)
+        response = query_opt_llm.invoke(formatted_prompt)
         raw_query = str(getattr(response, "content", response)).strip()
         # Clean quotes and backticks defensively
         clean_query = raw_query.strip("\"'`").strip()

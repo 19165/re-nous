@@ -2,13 +2,16 @@ from typing import List, Dict, Any, Optional, Tuple
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from schemas import SupervisorOutput, BudgetConfig
-from config import llm, default_budget
+from config import llm, default_budget, MAX_TOKENS_SUPERVISOR
 from utils.helpers import parse_pydantic_response, extract_token_usage
 from utils.logger import logger
 from agents.base_agent import BaseAgent
 
 # Initialize Pydantic Parser for SupervisorOutput
 supervisor_parser = PydanticOutputParser(pydantic_object=SupervisorOutput)
+
+# Dedicated model binding for Supervisor evaluation
+supervisor_llm = llm.bind(num_predict=MAX_TOKENS_SUPERVISOR)
 
 # User-defined Supervisor Prompt Template
 supervisor_prompt_template = """You are a rigorous Research Supervisor and Quality Assurance Evaluator.
@@ -102,7 +105,7 @@ class SupervisorAgent(BaseAgent):
             findings_context=findings_context
         )
         
-        response = llm.invoke(formatted_prompt)
+        response = supervisor_llm.invoke(formatted_prompt)
         parsed_output: SupervisorOutput = parse_pydantic_response(response.content, supervisor_parser)
         tokens = extract_token_usage(response, formatted_prompt)
         

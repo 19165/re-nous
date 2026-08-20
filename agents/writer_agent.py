@@ -2,13 +2,16 @@ from typing import List, Dict, Any, Tuple
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from schemas import WriterOutput
-from config import llm
+from config import llm, MAX_TOKENS_WRITER
 from utils.helpers import parse_pydantic_response, extract_token_usage
 from utils.logger import logger
 from agents.base_agent import BaseAgent
 
 # Initialize the Pydantic parser for WriterOutput
 writer_parser = PydanticOutputParser(pydantic_object=WriterOutput)
+
+# Dedicated model binding for Writer (large capacity 3500 tokens to prevent JSON truncation)
+writer_llm = llm.bind(num_predict=MAX_TOKENS_WRITER)
 
 # Set up the prompt template
 writer_prompt_template = """You are an expert technical writer. Your task is to synthesize the research findings gathered from multiple sub-questions into a cohesive, comprehensive, and well-structured report.
@@ -56,7 +59,7 @@ class WriterAgent(BaseAgent):
                 formatted_findings += f"Source [{s_idx}]: {title} ({url})\nContent: {content}\n\n"
 
         formatted_prompt = writer_prompt.format(question=question, findings=formatted_findings)
-        response = llm.invoke(formatted_prompt)
+        response = writer_llm.invoke(formatted_prompt)
         parsed_output = parse_pydantic_response(response.content, writer_parser)
         tokens = extract_token_usage(response, formatted_prompt)
         logger.info(f"📝 Report synthesis complete (Tokens used: [yellow]{tokens}[/yellow])")
