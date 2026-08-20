@@ -11,3 +11,7 @@ wheels/
 
 private_docs
 .env
+
+docs
+tasks
+notebook
