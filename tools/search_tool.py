@@ -3,20 +3,27 @@ from typing import List, Dict, Any, Union, Optional
 from langchain_tavily import TavilySearch
 from tools.base_tool import BaseTool
 from schemas import SearchSource
-from config import MAX_RAW_CONTENT_CHARS
+from config import TAVILY_CHUNKS_PER_SOURCE, TAVILY_INCLUDE_RAW_CONTENT, MAX_RAW_CONTENT_CHARS
 from utils.logger import logger
 
 class TavilySearchTool(BaseTool):
-    """Encapsulation adapter for Tavily Web Search with Markdown raw_content extraction."""
+    """Encapsulation adapter for Tavily Web Search with configurable chunks and raw_content extraction."""
     
     name: str = "tavily_search"
-    description: str = "Search the web for current facts, articles, and raw markdown research sources."
+    description: str = "Search the web for current facts, articles, and research sources."
     
-    def __init__(self, max_results: int = 3, include_raw_content: str = "markdown"):
+    def __init__(
+        self,
+        max_results: int = 3,
+        chunks_per_source: int = TAVILY_CHUNKS_PER_SOURCE,
+        include_raw_content: Union[bool, str] = TAVILY_INCLUDE_RAW_CONTENT
+    ):
         self.max_results = max_results
+        self.chunks_per_source = chunks_per_source
         self.include_raw_content = include_raw_content
         self._tool = TavilySearch(
             max_results=max_results,
+            chunks_per_source=chunks_per_source,
             include_raw_content=include_raw_content
         )
         
@@ -45,7 +52,7 @@ class TavilySearchTool(BaseTool):
         return cleaned.strip()
         
     def _format_results(self, raw_results: Union[Dict[str, Any], List[Any]]) -> List[SearchSource]:
-        """Parses and formats raw Tavily results, prioritizing cleaned markdown raw_content."""
+        """Parses and formats raw Tavily results, prioritizing high-signal chunks or cleaned markdown."""
         if isinstance(raw_results, dict) and "results" in raw_results:
             results_list = raw_results["results"]
         elif isinstance(raw_results, list):
@@ -61,7 +68,6 @@ class TavilySearchTool(BaseTool):
                 
                 if full_raw and isinstance(full_raw, str) and len(full_raw.strip()) > 0:
                     cleaned = self._clean_markdown_text(full_raw)
-                    # Truncate to safety ceiling
                     primary_content = cleaned[:MAX_RAW_CONTENT_CHARS]
                 else:
                     primary_content = snippet or ""
@@ -74,5 +80,9 @@ class TavilySearchTool(BaseTool):
                 ))
         return sources
 
-# Default shared search tool instance with markdown raw_content enabled
-search_tool = TavilySearchTool(max_results=3, include_raw_content="markdown")
+# Default shared search tool instance with 3 semantic chunks per source
+search_tool = TavilySearchTool(
+    max_results=3,
+    chunks_per_source=TAVILY_CHUNKS_PER_SOURCE,
+    include_raw_content=TAVILY_INCLUDE_RAW_CONTENT
+)
