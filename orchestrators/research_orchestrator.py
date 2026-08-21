@@ -19,6 +19,9 @@ from agents.supervisor_agent import run_supervisor
 from agents.writer_agent import run_writer
 from utils.logger import logger
 from utils.redis_cache import get_cached_node_result, set_cached_node_result
+from utils.citation_validator import validate_report_citations
+from services.tracer import Tracer
+from services.run_manager import RunManager
 
 # --- Findings Merger Reducer (Per-Subquestion Aggregation & URL Deduplication) ---
 
@@ -72,6 +75,7 @@ class WorkerState(TypedDict):
     main_topic: str
     sub_question: str
     is_retry: bool
+    run_id: Optional[str]
 
 class GraphState(TypedDict):
     """Main Orchestrator State for the Multi-Agent State Machine."""
@@ -92,16 +96,35 @@ class GraphState(TypedDict):
 # --- Async Graph Nodes ---
 
 async def planner_node(state: GraphState) -> Dict[str, Any]:
-    """Invokes Planner agent, applies sub-question limits, and initializes budget trackers with Redis caching."""
+    """Invokes Planner agent, applies sub-question limits, and initializes budget trackers with Redis caching & Tracing."""
     logger.info("[bold yellow]🧭 Running Planner Node...[/bold yellow]")
+    step_start = time.time()
     active_budget = state.get("budget") or default_budget
     question = state["question"]
+    run_id = state.get("run_id")
+
+    if run_id:
+        Tracer.publish_progress_event(run_id, "planner_started", {"question": question})
 
     # Check Redis Cache
     cached = get_cached_node_result("planner", question)
     if cached and "sub_questions" in cached:
         sub_qs = cached["sub_questions"][: active_budget.max_sub_questions]
+        latency_ms = (time.time() - step_start) * 1000
         logger.info(f"⚡ [bold green]Planner Cache Hit:[/bold green] Retrieved [cyan]{len(sub_qs)}[/cyan] sub-questions from cache")
+        if run_id:
+            await Tracer.record_step(
+                run_id=run_id,
+                step_index=1,
+                agent_name="Planner",
+                input_data={"question": question},
+                output_data={"sub_questions": sub_qs, "cache_hit": True},
+                tools_called=[],
+                tokens_used=0,
+                latency_ms=latency_ms,
+            )
+            Tracer.publish_progress_event(run_id, "planner_completed", {"sub_questions": sub_qs, "cache_hit": True})
+
         return {
             "sub_questions": sub_qs,
             "start_time": time.time(),
@@ -115,9 +138,23 @@ async def planner_node(state: GraphState) -> Dict[str, Any]:
 
     planner_result, tokens = run_planner(question)
     sub_qs = planner_result.sub_questions[: active_budget.max_sub_questions]
+    latency_ms = (time.time() - step_start) * 1000
     
     # Save to Redis Cache
     set_cached_node_result("planner", question, {"sub_questions": sub_qs})
+
+    if run_id:
+        await Tracer.record_step(
+            run_id=run_id,
+            step_index=1,
+            agent_name="Planner",
+            input_data={"question": question},
+            output_data={"sub_questions": sub_qs},
+            tools_called=[],
+            tokens_used=tokens,
+            latency_ms=latency_ms,
+        )
+        Tracer.publish_progress_event(run_id, "planner_completed", {"sub_questions": sub_qs, "tokens": tokens})
 
     logger.info(f"Planner created [cyan]{len(sub_qs)}[/cyan] sub-questions: [cyan]{sub_qs}[/cyan]")
     return {
@@ -132,11 +169,16 @@ async def planner_node(state: GraphState) -> Dict[str, Any]:
     }
 
 async def researcher_node(state: WorkerState) -> Dict[str, Any]:
-    """Invokes Researcher agent with Query Optimization and tracks tokens/search count with Redis caching."""
+    """Invokes Researcher agent with Query Optimization and tracks tokens/search count with Redis caching & Tracing."""
+    step_start = time.time()
     sub_q = state["sub_question"]
     main_topic = state.get("main_topic", "")
     is_retry = state.get("is_retry", False)
+    run_id = state.get("run_id")
     cache_input = f"{main_topic}::{sub_q}"
+
+    if run_id:
+        Tracer.publish_progress_event(run_id, "researcher_searching", {"sub_question": sub_q, "is_retry": is_retry})
 
     if is_retry:
         logger.info(f"🔄 [bold magenta]Researcher Node (2nd Pass/Retry):[/bold magenta] '{sub_q}'")
@@ -146,7 +188,21 @@ async def researcher_node(state: WorkerState) -> Dict[str, Any]:
     # Check Redis Cache
     cached = get_cached_node_result("researcher", cache_input)
     if cached and "findings" in cached:
+        latency_ms = (time.time() - step_start) * 1000
         logger.info(f"⚡ [bold green]Researcher Cache Hit:[/bold green] '{sub_q}'")
+        if run_id:
+            await Tracer.record_step(
+                run_id=run_id,
+                step_index=2,
+                agent_name="Researcher",
+                input_data={"sub_question": sub_q, "main_topic": main_topic, "is_retry": is_retry},
+                output_data={"sources_count": len(cached["findings"][0].get("sources", [])), "cache_hit": True},
+                tools_called=["tavily_search"],
+                tokens_used=0,
+                latency_ms=latency_ms,
+            )
+            Tracer.publish_progress_event(run_id, "researcher_completed", {"sub_question": sub_q, "sources_count": len(cached["findings"][0].get("sources", []))})
+
         return {
             "findings": cached["findings"],
             "total_searches": 0,
@@ -155,9 +211,23 @@ async def researcher_node(state: WorkerState) -> Dict[str, Any]:
 
     research_result, tokens = await run_researcher(sub_question=sub_q, main_topic=main_topic)
     findings_data = [research_result.model_dump()]
+    latency_ms = (time.time() - step_start) * 1000
 
     # Save to Redis Cache
     set_cached_node_result("researcher", cache_input, {"findings": findings_data})
+
+    if run_id:
+        await Tracer.record_step(
+            run_id=run_id,
+            step_index=2,
+            agent_name="Researcher",
+            input_data={"sub_question": sub_q, "main_topic": main_topic, "is_retry": is_retry},
+            output_data={"sources_count": len(research_result.sources), "status": research_result.status.value},
+            tools_called=["tavily_search"],
+            tokens_used=tokens,
+            latency_ms=latency_ms,
+        )
+        Tracer.publish_progress_event(run_id, "researcher_completed", {"sub_question": sub_q, "sources_count": len(research_result.sources)})
 
     return {
         "findings": findings_data,
@@ -166,19 +236,37 @@ async def researcher_node(state: WorkerState) -> Dict[str, Any]:
     }
 
 async def supervisor_node(state: GraphState) -> Dict[str, Any]:
-    """Evaluates researcher findings, enforces budgets, and decides if revision is needed with Redis caching."""
+    """Evaluates researcher findings, enforces budgets, and decides if revision is needed with Redis caching & Tracing."""
     logger.info("[bold yellow]🛡️ Running Supervisor Node (QA & Budget Enforcement)...[/bold yellow]")
-    
+    step_start = time.time()
     active_budget = state.get("budget") or default_budget
     elapsed_time = time.time() - state.get("start_time", time.time())
     current_revision = state.get("revision_count", 0)
     current_tokens = state.get("total_tokens", 0)
     findings = state.get("findings", [])
+    run_id = state.get("run_id")
+
+    if run_id:
+        Tracer.publish_progress_event(run_id, "supervisor_reviewing", {"revision_count": current_revision})
 
     cache_input = f"{state['question']}::rev_{current_revision}::{[s.get('sub_question', '') for s in findings]}"
     cached = get_cached_node_result("supervisor", cache_input)
     if cached:
+        latency_ms = (time.time() - step_start) * 1000
         logger.info(f"⚡ [bold green]Supervisor Cache Hit[/bold green]")
+        if run_id:
+            await Tracer.record_step(
+                run_id=run_id,
+                step_index=3,
+                agent_name="Supervisor",
+                input_data={"findings_count": len(findings), "revision_count": current_revision},
+                output_data={**cached, "cache_hit": True},
+                tools_called=[],
+                tokens_used=0,
+                latency_ms=latency_ms,
+            )
+            Tracer.publish_progress_event(run_id, "supervisor_decision", {"approved": cached["supervisor_approved"], "reasoning": cached["supervisor_feedback"]})
+
         return {
             "supervisor_approved": cached["supervisor_approved"],
             "supervisor_feedback": cached["supervisor_feedback"],
@@ -214,6 +302,7 @@ async def supervisor_node(state: GraphState) -> Dict[str, Any]:
 
     is_approved = supervisor_res.approved or (len(retry_list) == 0) or (current_revision >= active_budget.max_revisions)
     next_revision_count = current_revision + (1 if not is_approved else 0)
+    latency_ms = (time.time() - step_start) * 1000
     
     result_to_cache = {
         "supervisor_approved": is_approved,
@@ -223,28 +312,101 @@ async def supervisor_node(state: GraphState) -> Dict[str, Any]:
     }
     set_cached_node_result("supervisor", cache_input, result_to_cache)
 
+    if run_id:
+        await Tracer.record_step(
+            run_id=run_id,
+            step_index=3,
+            agent_name="Supervisor",
+            input_data={"findings_count": len(findings), "revision_count": current_revision},
+            output_data=result_to_cache,
+            tools_called=[],
+            tokens_used=tokens,
+            latency_ms=latency_ms,
+        )
+        Tracer.publish_progress_event(run_id, "supervisor_decision", {"approved": is_approved, "reasoning": supervisor_res.reasoning})
+
     return {
         **result_to_cache,
         "total_tokens": tokens,
     }
 
 async def writer_node(state: GraphState) -> Dict[str, Any]:
-    """Invokes Writer agent to synthesize all merged findings into the final report with Redis caching."""
+    """Invokes Writer agent to synthesize all merged findings into the final report with Citation Validation & Permanent Storage."""
     logger.info("[bold yellow]📝 Running Writer Node (Synthesizing Final Report)...[/bold yellow]")
+    step_start = time.time()
     findings = state.get("findings", [])
+    run_id = state.get("run_id")
     cache_input = f"{state['question']}::{[(f.get('sub_question', ''), len(f.get('sources', []))) for f in findings]}"
+
+    if run_id:
+        Tracer.publish_progress_event(run_id, "writer_composing", {"findings_count": len(findings)})
 
     cached = get_cached_node_result("writer", cache_input)
     if cached and "report" in cached:
+        latency_ms = (time.time() - step_start) * 1000
         logger.info(f"⚡ [bold green]Writer Cache Hit:[/bold green] Returning cached final report")
+        report_dict = cached["report"]
+        
+        # Complete run in DB if run_id present
+        if run_id:
+            total_time = time.time() - state.get("start_time", time.time())
+            await Tracer.record_step(
+                run_id=run_id,
+                step_index=4,
+                agent_name="Writer",
+                input_data={"findings_count": len(findings)},
+                output_data={"report_title": report_dict.get("title"), "cache_hit": True},
+                tools_called=[],
+                tokens_used=0,
+                latency_ms=latency_ms,
+            )
+            await RunManager.complete_run(
+                run_id=run_id,
+                report=report_dict,
+                total_tokens=state.get("total_tokens", 0),
+                total_searches=state.get("total_searches", 0),
+                revision_count=state.get("revision_count", 0),
+                execution_time_sec=total_time,
+            )
+            Tracer.publish_progress_event(run_id, "completed", {"title": report_dict.get("title"), "execution_time_sec": total_time})
+
         return {
-            "report": cached["report"],
+            "report": report_dict,
             "total_tokens": 0,
         }
 
     writer_result, tokens = run_writer(state["question"], findings)
-    report_dict = writer_result.model_dump()
+    
+    # Run Citation Validation
+    validated_report, warnings = validate_report_citations(writer_result, findings)
+    report_dict = validated_report.model_dump()
+    latency_ms = (time.time() - step_start) * 1000
+    
     set_cached_node_result("writer", cache_input, {"report": report_dict})
+
+    # Complete run in DB if run_id present
+    if run_id:
+        total_time = time.time() - state.get("start_time", time.time())
+        final_tokens = state.get("total_tokens", 0) + tokens
+        await Tracer.record_step(
+            run_id=run_id,
+            step_index=4,
+            agent_name="Writer",
+            input_data={"findings_count": len(findings)},
+            output_data={"report_title": validated_report.title, "citations_count": len(validated_report.citations), "validation_warnings": warnings},
+            tools_called=[],
+            tokens_used=tokens,
+            latency_ms=latency_ms,
+        )
+        await RunManager.complete_run(
+            run_id=run_id,
+            report=report_dict,
+            total_tokens=final_tokens,
+            total_searches=state.get("total_searches", 0),
+            revision_count=state.get("revision_count", 0),
+            execution_time_sec=total_time,
+        )
+        Tracer.publish_progress_event(run_id, "completed", {"title": validated_report.title, "execution_time_sec": total_time, "total_tokens": final_tokens})
 
     return {
         "report": report_dict,
@@ -259,7 +421,8 @@ def route_to_researchers(state: GraphState) -> List[Send]:
         Send("researcher", {
             "main_topic": state["question"],
             "sub_question": q,
-            "is_retry": False
+            "is_retry": False,
+            "run_id": state.get("run_id"),
         })
         for q in state["sub_questions"]
     ]
@@ -280,10 +443,12 @@ def route_from_supervisor(state: GraphState) -> Union[List[Send], str]:
         Send("researcher", {
             "main_topic": state["question"],
             "sub_question": item["query"],
-            "is_retry": True
+            "is_retry": True,
+            "run_id": state.get("run_id"),
         })
         for item in retry_items
     ]
+
 
 # --- Graph Assembly & Compilation ---
 
