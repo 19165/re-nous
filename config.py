@@ -63,3 +63,10 @@ except Exception as e:
     redis_client = None
     is_redis_available = False
 
+# Database Configuration (Phase 5 - Permanent Storage)
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/research_db"
+)
+
+
