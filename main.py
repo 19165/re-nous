@@ -2,14 +2,18 @@ import asyncio
 import argparse
 import uuid
 from typing import Optional
+import uvicorn
 from rich.pretty import pprint
 from orchestrators.research_orchestrator import app
 from schemas import BudgetConfig
 from config import default_budget
 from utils.logger import logger
 
-parser = argparse.ArgumentParser("Multi-Agent Research System CLI (Phase 4 with State Persistence & Cache)")
-parser.add_argument("--query", type=str, required=True, help="User's research query")
+parser = argparse.ArgumentParser("Multi-Agent Research System CLI & API Server (Phase 5)")
+parser.add_argument("--query", type=str, default=None, help="User's research query (CLI mode)")
+parser.add_argument("--serve", action="store_true", help="Start the FastAPI REST API & SSE Server")
+parser.add_argument("--host", type=str, default="0.0.0.0", help="API server host (default: 0.0.0.0)")
+parser.add_argument("--port", type=int, default=8000, help="API server port (default: 8000)")
 parser.add_argument("--run-id", type=str, default=None, help="Session Run ID to resume an existing workflow (defaults to auto-generated UUID)")
 parser.add_argument("--timeout", type=float, default=60.0, help="Wall-clock execution ceiling in seconds (default: 60.0)")
 parser.add_argument("--max-sub-questions", type=int, default=3, help="Maximum sub-questions to investigate (default: 3)")
@@ -18,7 +22,7 @@ parser.add_argument("--max-tokens", type=int, default=16000, help="Estimated tok
 async def run_system(query: str, run_id: Optional[str], timeout: float, max_sub_questions: int, max_tokens: int):
     """Executes the Multi-Agent Research System with Supervisor, Budget controls, and State Persistence."""
     session_id = run_id or f"run-{uuid.uuid4().hex[:8]}"
-    logger.info("[bold green]🚀 Initializing Multi-Agent Research System (Phase 4)...[/bold green]")
+    logger.info("[bold green]🚀 Initializing Multi-Agent Research System (Phase 5)...[/bold green]")
     logger.info(f"Research Topic: [cyan]'{query}'[/cyan]")
     logger.info(f"Session / Run ID: [magenta]{session_id}[/magenta]")
     
@@ -55,11 +59,19 @@ async def run_system(query: str, run_id: Optional[str], timeout: float, max_sub_
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    asyncio.run(run_system(
-        query=args.query,
-        run_id=args.run_id,
-        timeout=args.timeout,
-        max_sub_questions=args.max_sub_questions,
-        max_tokens=args.max_tokens,
-    ))
+
+    if args.serve:
+        logger.info(f"🌸 [bold green]Starting FastAPI Web Server on http://{args.host}:{args.port}...[/bold green]")
+        uvicorn.run("api.app:app", host=args.host, port=args.port, reload=True)
+    elif args.query:
+        asyncio.run(run_system(
+            query=args.query,
+            run_id=args.run_id,
+            timeout=args.timeout,
+            max_sub_questions=args.max_sub_questions,
+            max_tokens=args.max_tokens,
+        ))
+    else:
+        parser.print_help()
+
 
