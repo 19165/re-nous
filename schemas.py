@@ -67,3 +67,45 @@ class WriterOutput(BaseModel):
     summary: str = Field(description="A brief executive summary of the entire report")
     sections: List[ReportSection] = Field(description="List of detailed sections containing content and citations")
     citations: List[str] = Field(description="List of all unique source URLs referenced in the sections. The index corresponds to the inline citations [1], [2], etc.")
+    validation_warnings: List[str] = Field(default_factory=list, description="Warnings if any citations in the text are unverified or mismatched")
+
+# --- Run Status & API Schemas (Phase 5) ---
+class RunStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+
+class TraceStepSchema(BaseModel):
+    step_index: int = Field(description="Order index of this execution step")
+    agent_name: str = Field(description="Name of the agent (Planner, Researcher, Supervisor, Writer)")
+    input_data: Optional[dict] = Field(default=None, description="Input payload passed to the agent")
+    output_data: Optional[dict] = Field(default=None, description="Output payload produced by the agent")
+    tools_called: List[str] = Field(default_factory=list, description="List of tools invoked in this step")
+    tokens_used: int = Field(default=0, description="Tokens consumed during this step")
+    latency_ms: float = Field(default=0.0, description="Execution duration in milliseconds")
+    created_at: Optional[str] = Field(default=None, description="Timestamp when step was recorded")
+
+class ResearchRequest(BaseModel):
+    question: str = Field(..., min_length=3, description="The research query or topic to investigate")
+    timeout: Optional[float] = Field(default=60.0, description="Wall-clock execution ceiling in seconds")
+    max_sub_questions: Optional[int] = Field(default=3, description="Maximum sub-questions to investigate")
+    max_tokens: Optional[int] = Field(default=16000, description="Total token budget limit")
+
+class ResearchResponse(BaseModel):
+    run_id: str = Field(description="Unique ID for this research session")
+    status: RunStatus = Field(description="Initial status of the submitted research job")
+    message: str = Field(description="Informational status message")
+
+class ResearchStatusResponse(BaseModel):
+    run_id: str = Field(description="Unique ID for this research session")
+    question: str = Field(description="The original user query")
+    status: RunStatus = Field(description="Current status of the research workflow")
+    execution_time_sec: Optional[float] = Field(default=0.0, description="Total execution time in seconds")
+    total_tokens: Optional[int] = Field(default=0, description="Total exact tokens used across all agents")
+    total_searches: Optional[int] = Field(default=0, description="Total search API calls made")
+    revision_count: Optional[int] = Field(default=0, description="Total revision passes requested by Supervisor")
+    report: Optional[WriterOutput] = Field(default=None, description="Completed research report with verified citations")
+    error_message: Optional[str] = Field(default=None, description="Error message if the workflow failed")
+
