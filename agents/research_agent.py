@@ -1,0 +1,81 @@
+from typing import Any, Tuple, Optional
+from langchain_core.prompts import PromptTemplate
+from schemas import ResearcherOutput, SearchStatus
+from config import llm, MAX_TOKENS_QUERY_OPT
+from tools.search_tool import search_tool, TavilySearchTool
+from utils.helpers import extract_token_usage
+from utils.logger import logger
+from agents.base_agent import BaseAgent
+
+# Dedicated model binding for Query Optimizer (constrained to 60 tokens for maximum speed)
+query_opt_llm = llm.bind(options={"num_predict": MAX_TOKENS_QUERY_OPT})
+
+# Query Optimizer Prompt Template
+query_opt_prompt_template = """You are an Expert Search Query Optimizer. Your task is to convert a research sub-question into a concise, high-impact search engine query (3 to 8 keywords). 
+
+[CONTEXT]
+Main Topic: {main_topic}
+Sub-question: {sub_question}
+
+[RULES]
+1. Remove all filler words, conversational phrasing, and question formatting.
+2. Focus strictly on core entities, concepts, and domain terms.
+3. Keep the query grounded in the Main Topic so it does not lose context.
+4. Return ONLY the plain search query string. Do not include quotes, markdown code blocks, or any explanations.
+"""
+
+query_opt_prompt = PromptTemplate(
+    template=query_opt_prompt_template,
+    input_variables=["main_topic", "sub_question"]
+)
+
+class ResearchAgent(BaseAgent):
+    """Agent responsible for optimizing search queries and conducting web research with structured failure handling."""
+    
+    name: str = "Research Agent"
+    role: str = "Query Optimizer & Web Researcher"
+    
+    def __init__(self, tool: TavilySearchTool = search_tool):
+        self.tool = tool
+
+    def optimize_query(self, main_topic: str, sub_question: str) -> Tuple[str, int]:
+        """Converts conversational sub-question into high-density keywords via fast LLM."""
+        effective_topic = main_topic if main_topic else sub_question
+        formatted_prompt = query_opt_prompt.format(
+            main_topic=effective_topic,
+            sub_question=sub_question
+        )
+        response = query_opt_llm.invoke(formatted_prompt)
+        raw_query = str(getattr(response, "content", response)).strip()
+        clean_query = raw_query.strip("\"'`").strip()
+        tokens = extract_token_usage(response, formatted_prompt)
+        return clean_query if clean_query else sub_question, tokens
+        
+    def run(self, sub_question: str, main_topic: str = "") -> Tuple[ResearcherOutput, int]:
+        """Synchronous execution with query optimization and resilient status return."""
+        search_query, tokens = self.optimize_query(main_topic, sub_question)
+        logger.info(f"🎯 [bold cyan]Optimized Query:[/bold cyan] '{search_query}' (Tokens used: [yellow]{tokens}[/yellow])")
+        sources, status, err = self.tool.invoke(search_query)
+        return ResearcherOutput(
+            sub_question=sub_question,
+            sources=sources,
+            status=status,
+            error_message=err
+        ), tokens
+        
+    async def arun(self, sub_question: str, main_topic: str = "") -> Tuple[ResearcherOutput, int]:
+        """Asynchronous execution with query optimization and resilient status return."""
+        search_query, tokens = self.optimize_query(main_topic, sub_question)
+        logger.info(f"🎯 [bold cyan]Optimized Query:[/bold cyan] '{search_query}' (Tokens used: [yellow]{tokens}[/yellow])")
+        sources, status, err = await self.tool.ainvoke(search_query)
+        return ResearcherOutput(
+            sub_question=sub_question,
+            sources=sources,
+            status=status,
+            error_message=err
+        ), tokens
+
+# Functional wrapper for LangGraph nodes and backward compatibility
+async def run_researcher(sub_question: str, main_topic: str = "") -> Tuple[ResearcherOutput, int]:
+    agent = ResearchAgent()
+    return await agent.arun(sub_question, main_topic)

@@ -6,3 +6,11 @@ pydantic
 python-dotenv
 langchain-tavily
 rich
+tiktoken
+redis
+fastapi
+uvicorn[standard]
+sse-starlette
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+httpx
