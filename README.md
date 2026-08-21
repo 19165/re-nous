@@ -14,28 +14,30 @@ The system is architected around a **Two-Tier Storage Layer** coupled with a **S
 graph TD
     User([User / Client]) -->|HTTP / SSE| API[FastAPI Web Service]
     
-    subgraph Tier 1: In-Flight & Real-time Layer [⚡ Redis]
-        Cache[24h Deterministic Node Cache SHA-256]
-        PubSub[Real-time Event Stream Pub/Sub]
-        Checkpoints[LangGraph In-Flight Checkpointing]
+    subgraph Tier1 ["⚡ Tier 1: In-Flight & Real-time Layer (Redis)"]
+        Cache["24h Deterministic Node Cache (SHA-256)"]
+        PubSub["Real-time Event Stream (Pub/Sub)"]
+        Checkpoints["LangGraph In-Flight Checkpointing"]
     end
 
-    subgraph Multi-Agent State Machine [🤖 LangGraph Orchestrator]
-        Planner[🧭 Planning Agent] -->|Map: Sub-questions| Researchers[🔍 Research Agents]
-        Researchers --> Supervisor[🛡️ Supervisor QA & Budget Gatekeeper]
-        Supervisor -.->|Needs Revision & Count == 0| Researchers
-        Supervisor -->|Approved OR Budget Reached| Validator[🔍 Citation Validation Engine]
-        Validator --> Writer[📝 Writer Agent]
+    subgraph StateMachine ["🤖 LangGraph Multi-Agent State Machine"]
+        Planner["🧭 Planning Agent"] -->|Map: Sub-questions| Researchers["🔍 Research Agents"]
+        Researchers --> Supervisor["🛡️ Supervisor QA & Budget Gatekeeper"]
+        Supervisor -.->|Needs Revision| Researchers
+        Supervisor -->|Approved OR Budget Reached| Validator["🔍 Citation Validation Engine"]
+        Validator --> Writer["📝 Writer Agent"]
     end
 
-    subgraph Tier 2: Permanent Storage Layer [🐘 PostgreSQL 18]
-        Runs[(research_runs Table: Reports, Tokens, Status)]
-        Traces[(trace_steps Table: Full Audit Trail & Latency)]
+    subgraph Tier2 ["🐘 Tier 2: Permanent Storage Layer (PostgreSQL 18)"]
+        Runs[("research_runs Table: Reports, Tokens, Status")]
+        Traces[("trace_steps Table: Full Audit Trail & Latency")]
     end
 
-    API --> Multi-Agent State Machine
-    Multi-Agent State Machine <--> Tier 1
-    Multi-Agent State Machine --> Tier 2
+    API --> Planner
+    Writer --> Runs
+    Writer --> Traces
+    Researchers <--> Cache
+    StateMachine <--> PubSub
 ```
 
 ---
